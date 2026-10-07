@@ -24,6 +24,12 @@ DRY_RUN=0
 PY_ARGS=()
 
 # ---------------------------------------------------------------- output ---
+if [[ -d /var/log && -w /var/log ]]; then
+  PM_LOG="${VEXASHIELD_PM_LOG:-/var/log/vexashield-install.log}"
+else
+  PM_LOG="${VEXASHIELD_PM_LOG:-${TMPDIR:-/tmp}/vexashield-install.log}"
+fi
+
 if [[ -t 1 && -z "${NO_COLOR:-}" ]]; then
   R=$'\033[0m' B=$'\033[1m' D=$'\033[2m'
   RED=$'\033[31m' GRN=$'\033[32m' YLW=$'\033[33m'
@@ -240,18 +246,23 @@ install_packages() {
   fi
 
   step "installing: ${missing[*]}"
+  : >"$PM_LOG" 2>/dev/null || PM_LOG="${TMPDIR:-/tmp}/vexashield-install.log"
   local rc=0
   case "$PM" in
     apt-get)
-      export DEBIAN_FRONTEND=noninteractive
-      apt-get update -qq || rc=$?
-      apt-get install -y -qq -o Dpkg::Options::=--force-confold "${missing[@]}" || rc=$?
+      export DEBIAN_FRONTEND=noninteractive NEEDRESTART_MODE=a
+      apt-get update -qq >>"$PM_LOG" 2>&1 || rc=$?
+      apt-get install -y -qq \
+        -o Dpkg::Options::=--force-confold \
+        -o Dpkg::Use-Pty=0 \
+        -o APT::Color=0 \
+        "${missing[@]}" >>"$PM_LOG" 2>&1 || rc=$?
       ;;
-    dnf)     dnf install -y -q "${missing[@]}" || rc=$? ;;
-    yum)     yum install -y -q "${missing[@]}" || rc=$? ;;
-    zypper)  zypper --non-interactive install -q "${missing[@]}" || rc=$? ;;
-    pacman)  pacman -Sy --noconfirm --needed "${missing[@]}" || rc=$? ;;
-    apk)     apk add --quiet "${missing[@]}" || rc=$? ;;
+    dnf)     dnf install -y -q "${missing[@]}" >>"$PM_LOG" 2>&1 || rc=$? ;;
+    yum)     yum install -y -q "${missing[@]}" >>"$PM_LOG" 2>&1 || rc=$? ;;
+    zypper)  zypper --non-interactive install -q "${missing[@]}" >>"$PM_LOG" 2>&1 || rc=$? ;;
+    pacman)  pacman -Sy --noconfirm --needed "${missing[@]}" >>"$PM_LOG" 2>&1 || rc=$? ;;
+    apk)     apk add --quiet "${missing[@]}" >>"$PM_LOG" 2>&1 || rc=$? ;;
     *)       warn "no supported package manager found - install manually:" \
                   " ${missing[*]}"; rc=0 ;;
   esac
@@ -262,11 +273,15 @@ install_packages() {
     for r in python3 python curl ca-certificates; do
       command -v "$r" >/dev/null 2>&1 || fatal=1
     done
-    [[ $fatal -eq 1 ]] && die "could not install required packages (pm=$PM)"
+    if [[ $fatal -eq 1 ]]; then
+      tail -n 40 "$PM_LOG" 2>/dev/null || true
+      die "could not install required packages (pm=$PM)"
+    fi
     warn "some optional packages failed - continuing"
+    tail -n 20 "$PM_LOG" 2>/dev/null || true
     rc=0
   fi
-  ok "dependencies ready"
+  ok "dependencies ready (log $PM_LOG)"
 }
 
 verify_python() {
@@ -281,6 +296,28 @@ verify_python() {
 }
 
 # ---------------------------------------------------------------- source ---
+archive_ok() {
+  # only trust an archive that carries both entry points, at the root or
+  # inside the GitHub prefix directory
+  local entry list="" found_install="" found_cli=""
+  if ! list="$(tar -tzf "$1" 2>/dev/null)"; then
+    return 1
+  fi
+  while IFS= read -r entry; do
+    case "$entry" in
+      */install.py|install.py)        found_install=1 ;;
+      */vexashield/cli.py)            found_cli=1 ;;
+    esac
+  done <<<"$list"
+  [[ -n "$found_install" && -n "$found_cli" ]]
+}
+
+source_version() {
+  local f="$1/vexashield/core.py"
+  [[ -r "$f" ]] || { echo "unknown"; return 0; }
+  sed -n 's/^VERSION = "\(.*\)"/\1/p' "$f" | head -1
+}
+
 acquire_source() {
   local here script_dir
   script_dir="$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" 2>/dev/null && pwd || true)"
@@ -295,25 +332,37 @@ acquire_source() {
   trap 'rm -rf "$SRC" >/dev/null 2>&1 || true' EXIT
   step "fetching ${REPO}@${BRANCH}"
 
-  local tarball="https://github.com/${REPO}/archive/refs/heads/${BRANCH}.tar.gz"
+  local url="https://github.com/${REPO}/archive/refs/heads/${BRANCH}.tar.gz"
+  local got="" tarball="$SRC/src.tar.gz"
   if command -v curl >/dev/null 2>&1; then
-    curl -fsSL "$tarball" -o "$SRC/src.tar.gz" || die "download failed: $tarball"
+    curl -fsSL --retry 3 --retry-delay 1 -o "$tarball" "$url" 2>>"$PM_LOG" && got=tar
   elif command -v wget >/dev/null 2>&1; then
-    wget -qO "$SRC/src.tar.gz" "$tarball" || die "download failed: $tarball"
+    wget -qO "$tarball" "$url" 2>>"$PM_LOG" && got=tar
   else
     die "curl or wget required to fetch the source"
   fi
 
-  if command -v tar >/dev/null 2>&1; then
-    tar -xzf "$SRC/src.tar.gz" -C "$SRC" || die "extract failed"
+  if [[ "$got" == "tar" ]] && archive_ok "$tarball"; then
+    tar -xzf "$tarball" -C "$SRC" || die "extract failed"
+    local inner
+    inner="$(find "$SRC" -maxdepth 2 -name install.py -type f 2>/dev/null | head -1)"
+    [[ -n "$inner" ]] || die "unexpected archive layout"
+    SRC="$(dirname "$inner")"
   else
-    die "tar required to extract the source"
+    got=""
+    [[ -f "$tarball" ]] && { warn "archive rejected - falling back to git clone"; rm -f "$tarball"; }
+    if command -v git >/dev/null 2>&1 &&
+       git clone --depth 1 --quiet -b "$BRANCH" "https://github.com/${REPO}.git" \
+                 "$SRC/git" 2>>"$PM_LOG"; then
+      SRC="$SRC/git"
+      got=git
+    fi
   fi
-  local inner
-  inner="$(find "$SRC" -maxdepth 2 -name install.py -type f 2>/dev/null | head -1)"
-  [[ -n "$inner" ]] || die "unexpected archive layout"
-  SRC="$(dirname "$inner")"
-  ok "source ready"
+
+  if [[ -z "$got" || ! -f "$SRC/install.py" || ! -f "$SRC/vexashield/cli.py" ]]; then
+    die "could not fetch ${REPO}@${BRANCH} (see $PM_LOG)"
+  fi
+  ok "source ready ($(source_version "$SRC") on $BRANCH)"
 }
 
 # ------------------------------------------------------------------- run ---
