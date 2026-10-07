@@ -7,7 +7,7 @@
   <img src="https://img.shields.io/badge/license-MIT-3fb950?style=flat-square" alt="MIT">
   <img src="https://img.shields.io/badge/python-3.10%2B-5b9cff?style=flat-square" alt="Python 3.10+">
   <img src="https://img.shields.io/badge/platform-Linux-121519?style=flat-square" alt="Linux">
-  <img src="https://img.shields.io/badge/tests-46%2F46%20passing-3fb950?style=flat-square" alt="46/46 passing">
+  <img src="https://img.shields.io/badge/tests-62%2F62%20passing-3fb950?style=flat-square" alt="62/62 passing">
   <img src="https://img.shields.io/badge/dependencies-none-f85149?style=flat-square" alt="zero dependencies">
   <img src="https://img.shields.io/badge/version-1.0.0-d29922?style=flat-square" alt="v1.0.0">
 </p>
@@ -97,8 +97,8 @@ aborts the install, it degrades to a warning.
 | `-- <args>` | forward extra flags straight to `install.py` |
 
 `python3 install.py` accepts the same `--no-*` flags and honours `NO_COLOR`,
-`VS_ALERT_WEBHOOK`, `VS_BACKUP_WEBHOOK`, `VS_MENTION_ID` and `VS_DB_PASS` for
-scripted installs. `uninstall.sh` accepts `--keep-data` and `--purge`.
+`VS_ALERT_WEBHOOK`, `VS_BACKUP_WEBHOOK`, `VS_MENTION_ID`, `VS_ADMIN_PASS`,
+`VS_ADMIN_EMAIL`, `VS_DB_PASS` and `VS_NONINTERACTIVE=1` for scripted installs. `uninstall.sh` accepts `--keep-data` and `--purge`.
 
 </details>
 
@@ -112,9 +112,9 @@ scripted installs. `uninstall.sh` accepts `--keep-data` and `--purge`.
 | 🚦 | **HTTP throttle** | nginx `limit_req` + `limit_conn`, `429` on over-limit, auto-ban via fail2ban |
 | 🛡 | **fail2ban jails** | http flood, port scan, kernel flood — every ban pushed to Discord |
 | 💾 | **Database backups** | `mysqldump` → deflated zip → Discord parts → 7-day retention, verified |
-| 📊 | **Dashboard** | stdlib HTTP server on `:7890`, token login, CSRF, live controls |
+| 📊 | **Dashboard** | stdlib HTTP server on `:7890`, public status page, admin console, password or token login, CSRF |
 | 🔒 | **Host firewall** | UFW allow-list staged *before* enable — SSH can never be locked out |
-| 🧪 | **Isolated test suite** | 46 checks that never touch the host firewall, fail2ban or nginx |
+| 🧪 | **Isolated test suite** | 62 checks that never touch the host firewall, fail2ban or nginx |
 | 📦 | **Zero dependencies** | no pip installs, no frameworks, no shell helpers |
 
 ---
@@ -143,7 +143,7 @@ flowchart TD
     F --> G["2 · Database + schedule<br/>probe mysqldump"]:::ask
     G --> H["3 · Protection profile<br/>lite / standard / aggressive"]:::ask
     H --> I["4 · UFW allow-list<br/>ssh · 80 · 443 · 7890 · 2000-2050"]:::ask
-    I --> J["5 · Dashboard token"]:::ask
+    I --> J["5 · Admin password + access token"]:::ask
     J --> K["provision<br/>sysctl · fail2ban · nginx · ufw · iptables"]:::job
     K --> L{"nginx -t passes ?"}:::safe
     L -- no --> M["roll back every touched file"]:::safe
@@ -235,7 +235,8 @@ flowchart LR
     classDef safe fill:#161b22,stroke:#f85149,color:#e6edf3
     classDef job  fill:#121519,stroke:#3fb950,color:#e6edf3
 
-    U["browser<br/>:7890"]:::core --> L["token login<br/>constant-time compare"]:::safe
+    U["browser<br/>:7890"]:::core --> P0["GET /<br/>public status page"]:::job
+    P0 --> L["login<br/>password or token"]:::safe
     L --> S["HttpOnly · SameSite=Strict<br/>session + CSRF token"]:::safe
     S --> G["GET /api/overview<br/>state collectors"]:::job
     S --> A["POST /api/*<br/>CSRF header required"]:::safe
@@ -250,8 +251,10 @@ Webhook URLs and the access token are never returned by the API.
 
 ## 🌐 Dashboard
 
-`http://<host>:7890` — views for **Overview**, **Blocked**, **Protection**,
-**Bans**, **Backups** and **Settings**, with live actions: switch profile,
+`http://<host>:7890` — `/` is the public read-only status page (version,
+profile, counters, last backup), `/admin` is the console with views for
+**Overview**, **Blocked**, **Protection**, **Bans**, **Backups** and
+**Settings**, with live actions: switch profile,
 re-apply the stack, ban/unban addresses, trigger a backup, edit schedules and
 throttle limits, re-sync UFW.
 
@@ -264,10 +267,12 @@ vexashield dashboard url     # print the URL
 
 <br>
 
-- Token sign-in with constant-time comparison and login rate limiting
+- Admin password (pbkdf2-sha256, 200k rounds) or access-token sign-in,
+  constant-time comparison, login rate limiting
 - `HttpOnly` + `SameSite=Strict` session cookie, per-session CSRF token
 - Strict `Content-Security-Policy`, `X-Frame-Options: DENY`
 - Config endpoint returns masked tails only — never a webhook URL or the token
+- `/` serves a read-only status page: no session required, no config disclosed
 - `MemoryMax=192M` systemd sandbox
 
 </details>
@@ -389,7 +394,8 @@ python3 tests/smoke.py --keep   # keep the temp dir for inspection
 | Anti-DDoS | chain applied inside a network namespace (`unshare -rn`) |
 | nginx | template rendering + transactional wiring rollback |
 | fail2ban | jail rendering with the Discord action |
-| Dashboard | login, CSRF, 401/403, async backup, config redaction, all assets |
+| Dashboard | public routes, password and token login, CSRF, 401/403, async backup, config redaction, all assets |
+| Config | settings survive without the conf file, admin password stored hashed, ufw rule syntax, prompt fallback |
 | Regression | `/etc/nginx` must be byte-identical afterwards |
 
 ---
@@ -398,7 +404,10 @@ python3 tests/smoke.py --keep   # keep the temp dir for inspection
 
 - The config holds webhook URLs and DB credentials and is written `0600`.
 - The dashboard never returns webhook URLs or the access token — only masked
-  tail characters.
+  tail characters. The public page runs off `/api/public`, which is built by
+  hand from a whitelist of fields.
+- The admin password is stored only as a pbkdf2-sha256 digest in
+  `/var/lib/vexashield/vexashield.db` (`0600`).
 - `vexashield ddos reset` removes only VexaShield's own chains; UFW, Docker
   and any pre-existing rules stay untouched.
 - On a remote host, keep your SSH session open until `vexashield doctor`

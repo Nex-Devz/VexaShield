@@ -15,20 +15,25 @@
       <div class="wordmark">Vexa<span>Shield</span></div>
     </div>
 
-    <h1>Control panel</h1>
-    <p class="sub">Enter the access token generated during installation.</p>
+    <h1>Admin console</h1>
+    <p class="sub">Sign in with the admin password, or with the access token
+       from the installation. The status page needs neither.</p>
 
     <div class="field">
-      <label for="token">Access token</label>
-      <input type="password" id="token" name="token" placeholder="vs_••••••••••••"
+      <label for="secret">Password or access token</label>
+      <input type="password" id="secret" name="secret"
+             placeholder="password or vs_••••••••••••"
              spellcheck="false" autofocus required>
-      <div class="hint">Stored in <code>/etc/vexashield/vexashield.conf</code> as <code>dash_token</code>.</div>
+      <div class="hint">Token lives in <code>/etc/vexashield/vexashield.conf</code>
+         as <code>dash_token</code>.</div>
     </div>
 
     <button class="btn primary" type="submit" id="submit">Sign in</button>
     <div class="err" id="err"></div>
 
-    <div class="login-foot" id="foot">VexaShield v1.0.0</div>
+    <div class="login-foot" id="foot">
+      <a href="/" style="color:inherit">status page</a> &middot; VexaShield
+    </div>
   </form>
 </div>
 <script src="/static/js/login.js"></script>

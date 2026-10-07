@@ -10,8 +10,10 @@ so it never touches the host firewall, fail2ban, nginx or systemd.
 from __future__ import annotations
 
 import argparse
+import fcntl
 import json
 import os
+import pty
 import re
 import shutil
 import signal
@@ -19,6 +21,7 @@ import socket
 import subprocess
 import sys
 import tempfile
+import termios
 import time
 import urllib.error
 import urllib.request
@@ -85,6 +88,37 @@ def python_help(script: str, needle: str) -> bool:
     return r.returncode == 0 and needle in r.stdout
 
 
+def prompt_over_tty(answers: str, code: str, timeout: int = 30) -> str:
+    """Run `code` with a controlling terminal while stdin stays a pipe.
+
+    This is the shape of `curl ... | bash`: nothing on stdin, but the
+    operator's terminal still reachable through /dev/tty.
+    """
+    master, slave = pty.openpty()
+
+    def child() -> None:
+        os.setsid()
+        fcntl.ioctl(slave, termios.TIOCSCTTY, 0)
+
+    proc = subprocess.Popen(
+        [sys.executable, "-c", code], stdin=subprocess.DEVNULL,
+        stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+        preexec_fn=child, pass_fds=(slave,))
+    os.close(slave)
+    try:
+        os.write(master, answers.encode())
+    except OSError:
+        pass
+    try:
+        out, _ = proc.communicate(timeout=timeout)
+    except subprocess.TimeoutExpired:
+        proc.kill()
+        out, _ = proc.communicate()
+    finally:
+        os.close(master)
+    return (out or b"").decode(errors="replace")
+
+
 def main() -> int:
     global T, ENV, BASE
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
@@ -123,6 +157,89 @@ def main() -> int:
     conf = f"{T}/etc/vexashield.conf"
     mode = os.stat(conf).st_mode & 0o777
     check("config file mode 0600", mode == 0o600, oct(mode))
+
+    # ------------------------------------------------------- ufw syntax ----
+    r = subprocess.run(
+        [sys.executable, "-c",
+         "import sys; sys.path.insert(0, r'%s');"
+         "from vexashield.ufw import spec;"
+         "ok = (spec('22', 'tcp') == '22/tcp'"
+         " and spec('7890', 'udp') == '7890/udp'"
+         " and spec('2000-2050', 'udp') == '2000:2050/udp'"
+         " and spec('2000:2050', 'tcp') == '2000:2050/tcp');"
+         "print('SPEC_OK' if ok else 'SPEC_BAD')" % REPO],
+        env=ENV, capture_output=True, text=True, timeout=30)
+    check("ufw rule specs", "SPEC_OK" in r.stdout, r.stdout.strip()[:80])
+
+    # ----------------------------------------------------- prompt fallback --
+    r = subprocess.run(
+        [sys.executable, "-c",
+         "import sys; sys.path.insert(0, r'%s');"
+         "from vexashield import core;"
+         "core.set_non_interactive(True)"
+         "; assert not core.can_ask();"
+         "core.set_non_interactive(False)"
+         "; core._tty = lambda *a, **k: None"   # host with no controlling tty
+         "; assert not core.can_ask();"
+         "ok = core.prompt('password', 'dflt') == 'dflt'"
+         " and core.confirm('continue', True) is True"
+         " and core.choose('pick', ['a', 'b'], 'a') == 'a';"
+         "print('PROMPT_OK' if ok else 'PROMPT_BAD')" % REPO],
+        env=ENV, capture_output=True, text=True, timeout=30,
+        stdin=subprocess.DEVNULL)
+    check("prompt falls back without a tty", "PROMPT_OK" in r.stdout,
+          r.stdout.strip() or r.stderr.strip()[:80])
+
+    out = prompt_over_tty(
+        "typed-over-tty\ny\n",
+        "import sys; sys.path.insert(0, r'%s');"
+        "from vexashield import core;"
+        "core.set_non_interactive(False);"
+        "print('CANASK', core.can_ask());"
+        "print('ANSWER', core.prompt('webhook url', 'defaulted'));"
+        "print('CONFIRM', core.confirm('continue', False));"
+        "print('DONE')" % REPO)
+    check("prompt through /dev/tty",
+          "CANASK True" in out and "ANSWER typed-over-tty" in out
+          and "CONFIRM True" in out,
+          " ".join(out.split())[:130])
+
+    # ------------------------------------------------- settings database ----
+    r = subprocess.run(
+        [sys.executable, "-c",
+         "import sys, os; sys.path.insert(0, r'%s');"
+         "from vexashield import core, db;"
+         "cfg = core.load_config();"
+         "cfg['alert_webhook'] = 'https://discord.com/api/webhooks/7/abc';"
+         "cfg['mention_id'] = '424242';"
+         "core.save_config(cfg);"
+         "os.unlink(core.CONFIG_FILE);"
+         "cfg2 = core.load_config();"
+         "ok = cfg2['alert_webhook'].endswith('/7/abc')"
+         " and cfg2['mention_id'] == '424242'"
+         " and cfg2['profile'] == cfg['profile'];"
+         "ok = ok and (os.stat(db.DB_FILE).st_mode & 0o777) == 0o600;"
+         "cfg2['alert_webhook'] = ''; cfg2['backup_webhook'] = '';"
+         "core.save_config(cfg2);"
+         "print('DB_OK' if ok else 'DB_BAD')" % REPO],
+        env=ENV, capture_output=True, text=True, timeout=30)
+    check("settings survive without conf file", "DB_OK" in r.stdout,
+          r.stdout.strip() or r.stderr.strip()[:120])
+
+    # --------------------------------------------------- admin account ------
+    r = subprocess.run(
+        [sys.executable, "-c",
+         "import sys; sys.path.insert(0, r'%s');"
+         "from vexashield import db;"
+         "pw = 'correct-horse-battery';"
+         "saved = db.set_admin(pw, 'ops@example.com');"
+         "ok = saved and db.check_password(pw) and not db.check_password('nope');"
+         "blob = open(db.DB_FILE, 'rb').read();"
+         "ok = ok and pw.encode() not in blob and b'pbkdf2_sha256$' in blob;"
+         "print('ADMIN_OK' if ok else 'ADMIN_BAD')" % REPO],
+        env=ENV, capture_output=True, text=True, timeout=60)
+    check("admin password stored hashed", "ADMIN_OK" in r.stdout,
+          r.stdout.strip() or r.stderr.strip()[:120])
 
     # --------------------------------------------------------- installer --
     r = subprocess.run(["bash", "-n", str(REPO / "install.sh")],
@@ -286,6 +403,35 @@ print('WIRE_OK' if (wired and rolled) else 'WIRE_BAD', n, len(store))
         check("unauth overview blocked", api("GET", "/api/overview")[0] == 401)
         check("unauth csrf blocked",
               api("POST", "/api/config", {"backup_retention": 7})[0] == 401)
+
+        # public surface: no session, no secrets
+        try:
+            with urllib.request.urlopen(BASE + "/", timeout=15) as r2:
+                page = r2.read().decode("utf-8", "replace")
+            check("public status page",
+                  "public.js" in page and "Open admin console" in page,
+                  f"{len(page)}B")
+        except Exception as e:                       # noqa: BLE001
+            check("public status page", False, str(e))
+        try:
+            with urllib.request.urlopen(BASE + "/admin", timeout=15) as r2:
+                page = r2.read().decode("utf-8", "replace")
+            check("admin route needs sign in",
+                  "Password or access token" in page, f"{len(page)}B")
+        except Exception as e:                       # noqa: BLE001
+            check("admin route needs sign in", False, str(e))
+
+        s, pub = api("GET", "/api/public")
+        blob = json.dumps(pub)
+        leaked = [w for w in ("webhook", "vs_", "password", "db_pass",
+                              "hostname", "dash_token", "/var/")
+                  if w in blob]
+        check("public api redacted",
+              s == 200 and not leaked and pub.get("protection") is not None,
+              ",".join(leaked) or f"{len(blob)}B")
+
+        check("bad password rejected",
+              api("POST", "/api/login", {"password": "not-the-password"})[0] == 401)
         check("bad token rejected",
               api("POST", "/api/login", {"token": "wrong"})[0] == 401)
 
@@ -300,6 +446,14 @@ print('WIRE_OK' if (wired and rolled) else 'WIRE_BAD', n, len(store))
         csrf = login.get("csrf", "")
         check("login issues csrf", s == 200 and bool(csrf), csrf[:10] + "...")
         check("session cookie set", any(c.name == "vs_sid" for c in JAR))
+
+        try:
+            with OPENER.open(BASE + "/admin", timeout=15) as r3:
+                page = r3.read().decode("utf-8", "replace")
+            check("admin console after sign in", 'id="view-overview"' in page,
+                  f"{len(page)}B")
+        except Exception as e:                       # noqa: BLE001
+            check("admin console after sign in", False, str(e))
 
         s, sess = api("GET", "/api/session")
         check("session endpoint", s == 200 and sess.get("csrf") == csrf)
@@ -336,13 +490,47 @@ print('WIRE_OK' if (wired and rolled) else 'WIRE_BAD', n, len(store))
                     and not str(cf.get("webhook_alert", "")).startswith("http"))
         check("config redaction", redacted, str(cf.get("webhook_alert")))
 
+        # password sign-in, after the token flow so both credentials are proven
+        api("POST", "/api/logout", {})
+        s, login2 = api("POST", "/api/login",
+                        {"password": "correct-horse-battery"})
+        csrf2 = login2.get("csrf", "")
+        check("password login", s == 200 and bool(csrf2), login2.get("error", ""))
+
+        s, sess2 = api("GET", "/api/session")
+        check("password session account",
+              s == 200 and sess2.get("user") == "admin"
+              and sess2.get("email") == "ops@example.com",
+              str(sess2.get("email")))
+
+        s, pw = api("POST", "/api/password",
+                    {"password": "short", "email": "ops@example.com"},
+                    {"X-VS-CSRF": csrf2})
+        check("weak password refused", s == 400, str(pw.get("error", "")))
+
+        s, pw = api("POST", "/api/password",
+                    {"password": "another-good-pass", "email": "ops@example.com"},
+                    {"X-VS-CSRF": csrf2})
+        relog = api("POST", "/api/login", {"password": "another-good-pass"})
+        check("password change works", s == 200 and relog[0] == 200,
+              str(pw.get("error", "")) or str(relog[1].get("error", "")))
+
         for asset in ("/static/css/app.css", "/static/js/app.js",
-                      "/static/js/login.js", "/static/login.html", "/"):
-            try:
-                with urllib.request.urlopen(BASE + asset, timeout=15) as r2:
-                    check("asset " + asset, r2.status == 200, f"{len(r2.read())}B")
-            except Exception as e:
-                check("asset " + asset, False, str(e))
+                      "/static/js/login.js", "/static/js/public.js",
+                      "/static/login.html", "/static/public.html", "/"):
+            err, done = "", False
+            for _ in range(2):                    # one retry - keepalive races
+                try:
+                    with OPENER.open(BASE + asset, timeout=15) as r2:
+                        blob_a = r2.read()
+                    check("asset " + asset, True, f"{len(blob_a)}B")
+                    done = True
+                    break
+                except Exception as e:            # noqa: BLE001
+                    err = str(e)
+                    time.sleep(0.5)
+            if not done:
+                check("asset " + asset, False, err)
     finally:
         try:
             os.killpg(os.getpgid(proc.pid), signal.SIGTERM)

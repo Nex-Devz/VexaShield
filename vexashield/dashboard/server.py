@@ -15,7 +15,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
 from .. import backup as backup_mod
-from .. import core, ddos, state, ufw
+from .. import core, db, ddos, state, ufw
 from . import auth
 
 STATIC = Path(__file__).resolve().parent / "static"
@@ -105,24 +105,27 @@ class Handler(BaseHTTPRequestHandler):
             return self._static(path[len("/static/"):])
         if path == "/favicon.ico":
             return self._send(204, b"", "image/x-icon")
-        if path in ("/", "/index.html", "/login"):
+        if path in ("/", "/index.html", "/admin", "/login"):
             sess = self._session()
-            if path == "/login" and not sess:
-                return self._page("login.html")
-            if not sess:
-                return self._page("login.html")
-            return self._page("index.html")
+            if path == "/":
+                # signed in -> console, otherwise the public status page
+                return self._page("index.html" if sess else "public.html")
+            return self._page("index.html" if sess else "login.html")
         try:
             if path.startswith("/api/"):
-                sess = self._session()
                 if path == "/api/health":
                     return self._json({"ok": True, "version": core.VERSION})
+                if path == "/api/public":
+                    return self._json(_public_status())
+                sess = self._session()
                 if not sess:
                     return self._json({"error": "unauthorized"}, 401)
                 if path == "/api/session":
+                    account = db.admin()
                     return self._json({"ok": True,
                                        "csrf": sess.get("csrf", ""),
-                                       "user": "root"})
+                                       "user": "admin",
+                                       "email": account.get("email", "")})
                 return self._api_get(path, url.query, sess)
             self._send(404, b"not found", "text/plain")
         except BrokenPipeError:
@@ -164,12 +167,18 @@ class Handler(BaseHTTPRequestHandler):
             auth.record_attempt(self.ip)
             return self._json({"error": "too many attempts, wait a minute"}, 429)
         body = self._body()
-        token = str(body.get("token", ""))
-        cfg = core.load_config()
-        if not auth.check_token(token, cfg.get("dash_token", "")):
+        candidate = str(body.get("password") or body.get("credential")
+                        or body.get("token") or "")
+        good = False
+        if candidate:
+            cfg = core.load_config()
+            good = auth.check_token(candidate, cfg.get("dash_token", ""))
+            if not good:
+                good = db.check_password(candidate)
+        if not good:
             auth.record_attempt(self.ip)
             state.clear_cache()
-            return self._json({"error": "invalid token"}, 401)
+            return self._json({"error": "invalid password or token"}, 401)
         auth._attempts.pop(self.ip, None)
         sess = auth.create_session(self.ip)
         cookie = (f"vs_sid={sess['id']}; Path=/; HttpOnly; SameSite=Strict; "
@@ -281,6 +290,17 @@ class Handler(BaseHTTPRequestHandler):
                 state.clear_cache()
             return self._json({"ok": True, "config": _public_config(cfg)})
 
+        if path == "/api/password":
+            pw = str(body.get("password", ""))
+            if len(pw) < 8:
+                return self._json(
+                    {"error": "password must be at least 8 characters"}, 400)
+            if not db.set_admin(pw, str(body.get("email", ""))):
+                return self._json({"error": "could not store password"}, 500)
+            _security_log("dashboard password changed")
+            state.clear_cache()
+            return self._json({"ok": True})
+
         if path == "/api/ufw/reload":
             res = ufw.configure(cfg, enable=bool(body.get("enable", True)))
             state.clear_cache()
@@ -314,6 +334,46 @@ def _run_backup(cfg: dict) -> None:
 def _security_log(msg: str) -> None:
     core.init_logging("security")
     core.log("info", msg)
+
+
+def _public_status() -> dict:
+    """Data behind the public status page.
+
+    Picked by hand: webhooks, tokens, credentials, host names, paths, service
+    names and client addresses never enter this dictionary.
+    """
+    cfg = core.load_config()
+    ov = state.overview()
+    prot = ov.get("protection") or {}
+    backups = ov.get("backups") or {}
+    last = backups.get("last") or {}
+    files = ov.get("backup_files") or []
+    bans = ov.get("bans") or {}
+    return {
+        "product": core.PRODUCT,
+        "version": core.VERSION,
+        "generated": str(ov.get("generated") or ""),
+        "uptime": float(ov.get("uptime") or 0),
+        "profile": str(cfg.get("profile") or ""),
+        "enabled": bool(int(cfg.get("enable_ddos", 1) or 0)),
+        "protection": {
+            "loaded": bool(prot.get("loaded")),
+            "rules": int(prot.get("rules") or 0),
+            "packets": int(prot.get("packets") or 0),
+            "dropped": int(prot.get("dropped") or 0),
+            "applied": str(prot.get("applied") or ""),
+        },
+        "bans": int(bans.get("total") or 0),
+        "backup": {
+            "files": len(files),
+            "last": {
+                "ok": bool(last.get("ok")),
+                "at": str(last.get("at") or ""),
+                "size": int(last.get("size") or 0),
+                "zip": int(last.get("zip") or 0),
+            } if last else None,
+        },
+    }
 
 
 def _public_config(cfg: dict) -> dict:

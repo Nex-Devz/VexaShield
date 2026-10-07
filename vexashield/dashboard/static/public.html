@@ -1,0 +1,89 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="robots" content="noindex, nofollow">
+<title>VexaShield - status</title>
+<link rel="stylesheet" href="/static/css/app.css">
+</head>
+<body>
+<div class="app">
+  <div class="main">
+    <header class="topbar">
+      <div class="brand" style="display:flex;align-items:center;gap:11px">
+        <div class="mark"></div>
+        <div class="wordmark">Vexa<span>Shield</span></div>
+      </div>
+      <div class="spacer"></div>
+      <span class="chip"><span class="dot" id="s-dot"></span><b id="s-state">checking</b></span>
+      <span class="chip">profile <b id="s-profile">-</b></span>
+      <span class="chip">blocked <b id="s-blocked">0</b></span>
+      <a class="btn sm" href="/admin">Admin</a>
+    </header>
+
+    <main class="content">
+      <div class="grid g4" style="margin-bottom:14px">
+        <div class="card tile">
+          <div class="k">Protection</div>
+          <div class="v" id="t-protection">-</div>
+          <div class="sub">scrubbing chain</div>
+        </div>
+        <div class="card tile">
+          <div class="k">Packets inspected</div>
+          <div class="v" id="t-packets">0</div>
+          <div class="sub">since the chain was applied</div>
+        </div>
+        <div class="card tile">
+          <div class="k">Blocked</div>
+          <div class="v" id="t-dropped">0</div>
+          <div class="sub">scan and flood rules</div>
+        </div>
+        <div class="card tile">
+          <div class="k">Last backup</div>
+          <div class="v" id="t-backup">-</div>
+          <div class="sub" id="t-backup-sub">nightly dump</div>
+        </div>
+      </div>
+
+      <div class="grid g2">
+        <div class="card">
+          <h2>Service</h2>
+          <div class="body">
+            <table>
+              <tbody>
+                <tr><td style="width:52%">Version</td><td class="strong" id="r-version">-</td></tr>
+                <tr><td>Profile</td><td class="strong" id="r-profile">-</td></tr>
+                <tr><td>Chain applied</td><td class="strong" id="r-applied">-</td></tr>
+                <tr><td>Rules in chain</td><td class="strong" id="r-rules">-</td></tr>
+                <tr><td>Active bans</td><td class="strong" id="r-bans">-</td></tr>
+                <tr><td>Uptime</td><td class="strong" id="r-uptime">-</td></tr>
+                <tr><td>Backups on disk</td><td class="strong" id="r-backups">-</td></tr>
+              </tbody>
+            </table>
+          </div>
+        </div>
+
+        <div class="card">
+          <h2>Control panel</h2>
+          <div class="body">
+            <p style="color:var(--dim);font-size:13.5px;margin:0 0 16px">
+              This is the read-only view. Bans, backups, protection profiles and
+              the host firewall are managed from the admin console, which needs
+              the password set during installation or the access token.
+            </p>
+            <a class="btn primary" href="/admin"
+               style="display:inline-block;text-decoration:none">Open admin console</a>
+            <div class="kv" style="margin-top:18px">
+              <dt>refresh</dt><dd>every 15 seconds</dd>
+              <dt>view</dt><dd>public</dd>
+            </div>
+          </div>
+        </div>
+      </div>
+    </main>
+  </div>
+</div>
+<script src="/static/js/public.js"></script>
+</body>
+</html>
