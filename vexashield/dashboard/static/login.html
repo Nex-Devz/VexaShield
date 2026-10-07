@@ -1,0 +1,36 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="robots" content="noindex, nofollow">
+<title>VexaShield - Sign in</title>
+<link rel="stylesheet" href="/static/css/app.css">
+</head>
+<body>
+<div class="login-wrap">
+  <form class="login-card" id="form" autocomplete="off">
+    <div class="brand">
+      <div class="mark"></div>
+      <div class="wordmark">Vexa<span>Shield</span></div>
+    </div>
+
+    <h1>Control panel</h1>
+    <p class="sub">Enter the access token generated during installation.</p>
+
+    <div class="field">
+      <label for="token">Access token</label>
+      <input type="password" id="token" name="token" placeholder="vs_••••••••••••"
+             spellcheck="false" autofocus required>
+      <div class="hint">Stored in <code>/etc/vexashield/vexashield.conf</code> as <code>dash_token</code>.</div>
+    </div>
+
+    <button class="btn primary" type="submit" id="submit">Sign in</button>
+    <div class="err" id="err"></div>
+
+    <div class="login-foot" id="foot">VexaShield v1.0.0</div>
+  </form>
+</div>
+<script src="/static/js/login.js"></script>
+</body>
+</html>

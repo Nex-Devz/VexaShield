@@ -1,0 +1,13 @@
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+.env
+*.conf.local
+
+# never commit secrets
+vexashield.conf
+/etc/
+*.token
+*.webhook

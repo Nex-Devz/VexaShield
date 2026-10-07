@@ -1,0 +1,24 @@
+[Unit]
+Description=VexaShield control dashboard
+Documentation=https://github.com/nex-devz/VexaShield
+After=network-online.target vexashield-firewall.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+Environment=VS_ROOT=/opt/vexashield
+ExecStart=/usr/local/bin/vexashield dashboard run
+Restart=always
+RestartSec=3
+RestartPreventExitStatus=2
+Nice=5
+MemoryMax=192M
+TasksMax=64
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=full
+ProtectHome=true
+ReadWritePaths=/var/lib/vexashield /var/log/vexashield /etc/vexashield
+
+[Install]
+WantedBy=multi-user.target

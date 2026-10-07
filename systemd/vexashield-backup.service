@@ -1,0 +1,11 @@
+[Unit]
+Description=VexaShield nightly database backup
+Documentation=https://github.com/nex-devz/VexaShield
+After=network-online.target mariadb.service mysql.service
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/bin/vexashield backup run --quiet
+Nice=10
+IOSchedulingClass=idle
+MemoryMax=512M

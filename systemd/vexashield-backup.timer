@@ -1,0 +1,10 @@
+[Unit]
+Description=Run VexaShield backup on a schedule
+
+[Timer]
+OnCalendar=*-*-* 02:00:00
+Persistent=true
+RandomizedDelaySec=120
+
+[Install]
+WantedBy=timers.target

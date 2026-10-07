@@ -1,0 +1,17 @@
+[Unit]
+Description=VexaShield anti-DDoS chain and host firewall
+Documentation=https://github.com/nex-devz/VexaShield
+After=network-pre.target ufw.service fail2ban.service
+Wants=network-pre.target
+Before=network-online.target
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/usr/local/bin/vexashield ddos apply --quiet
+ExecReload=/usr/local/bin/vexashield ddos apply --quiet
+ExecStop=/usr/local/bin/vexashield ddos reset
+TimeoutStartSec=60
+
+[Install]
+WantedBy=multi-user.target
