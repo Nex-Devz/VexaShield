@@ -55,16 +55,31 @@ def _default(direction: str) -> str:
     return m.group(1) if m else "?"
 
 
+def spec(port: str, proto: str = "tcp") -> str:
+    """Render a ufw rule argument: 22/tcp, 7890/udp, 2000:2050/tcp.
+
+    ufw wants the port first and uses a colon for ranges - tcp/22 and
+    2000-2050/tcp are both rejected outright.
+    """
+    text = str(port).strip()
+    if "/" in text:
+        return text
+    text = text.replace("-", ":")
+    return f"{text}/{proto}"
+
+
 def allow(port: str, proto: str = "tcp", comment: str = "") -> bool:
-    args = ["ufw", "allow", f"{proto}/{port}" if str(port).isdigit() else str(port)]
-    if not str(port).isdigit() and "/" not in str(port):
-        args = ["ufw", "allow", str(port)]
+    rule = spec(port, proto)
+    args = ["ufw", "allow", rule]
     if comment:
         args += ["comment", comment]
     res = core.run(args)
     if res.returncode != 0:
-        core.log("warn", f"ufw allow {port}/{proto}: {res.stderr.strip()[:120]}")
+        core.log("warn", f"ufw allow {rule}: {res.stderr.strip()[:120]}")
         return False
+    if "Skipping adding existing rule" in res.stdout:
+        return True
+    core.log("info", f"ufw allow {rule}")
     return True
 
 
@@ -80,14 +95,21 @@ def configure(cfg: dict, *, enable: bool = True) -> dict:
         return {"ok": False, "allowed": []}
 
     allowed: list[str] = []
+    seen: set[str] = set()
 
-    def add(port: str, proto: str, note: str) -> None:
-        if allow(port, proto, note):
-            allowed.append(f"{proto}/{port}")
+    def add(port: str, proto: str, note: str) -> bool:
+        rule = spec(port, proto)
+        if rule in seen:
+            return True
+        seen.add(rule)
+        if not allow(port, proto, note):
+            return False
+        allowed.append(rule)
+        return True
 
     # 1. ssh first, always
     ssh_port = _ssh_port()
-    add(ssh_port, "tcp", "vexashield: ssh")
+    ssh_ok = add(ssh_port, "tcp", "vexashield: ssh")
 
     # 2. web
     for p in ("80", "443"):
@@ -119,6 +141,11 @@ def configure(cfg: dict, *, enable: bool = True) -> dict:
     if not enable:
         core.log("info", "rules staged, ufw left disabled")
         return {"ok": True, "allowed": allowed, "active": False}
+
+    if not ssh_ok:
+        core.log("err", f"ssh rule {ssh_port}/tcp rejected - leaving ufw "
+                        "disabled so you keep access")
+        return {"ok": False, "allowed": allowed, "active": False}
 
     # refuse new connections while staging, then flip the switch
     core.run(["ufw", "default", "deny", "incoming"])
