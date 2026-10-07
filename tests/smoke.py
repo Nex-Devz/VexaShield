@@ -12,6 +12,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import re
 import shutil
 import signal
 import socket
@@ -365,6 +366,32 @@ print('WIRE_OK' if (wired and rolled) else 'WIRE_BAD', n, len(store))
               live.stdout.strip()[:80] or "no references")
     else:
         skip("live nginx untouched", "no /etc/nginx on this host")
+
+    # ------------------------------------------------------------ README --
+    readme = (REPO / "README.md").read_text(encoding="utf-8")
+    block = "".join(chr(x) for x in (0x2588, 0x2554, 0x255A, 0x2551))
+    check("README free of block-art", all(ch not in readme for ch in block))
+    fences = len(re.findall(r"^```", readme, re.M))
+    check("README code fences balanced", fences % 2 == 0, f"{fences} fences")
+    check("README dropdowns balanced",
+          readme.count("<details>") == readme.count("</details>")
+          and readme.count("<summary>") == readme.count("</summary>"),
+          f"{readme.count('<details>')} <details>")
+    anchors = re.findall(r'href="#([^"]+)"', readme)
+    slugs = []
+    for _, txt in re.findall(r"^(#{2}) (.+)$", readme, re.M):
+        flat = "".join(ch for ch in txt.lower() if ch.isalnum() or ch in "-_ ")
+        slugs.append(flat.replace(" ", "-"))
+    check("README anchors resolve",
+          bool(anchors) and all(a in slugs for a in anchors),
+          " ".join(anchors))
+
+    # must stay last: it counts the checks above plus itself
+    m = re.search(r"badge/tests-(\d+)%2F(\d+)", readme)
+    total = len(RESULTS) + 1
+    check("README test badge accurate",
+          bool(m) and int(m.group(1)) == int(m.group(2)) == total,
+          f"badge={m.group(1)}/{m.group(2)} actual={total}" if m else "no badge")
 
     passed = sum(1 for _, ok, _ in RESULTS if ok)
     print(f"\n==== {passed}/{len(RESULTS)} checks passed ====")

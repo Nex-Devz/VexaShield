@@ -1,83 +1,190 @@
-# VexaShield
+<p align="center">
+  <strong>VexaShield</strong><br>
+  <sub>Anti-DDoS engine · Discord-delivered database backups · control dashboard</sub>
+</p>
 
-Anti-DDoS engine, Discord-delivered database backups and a control dashboard
-for small production VPSes. One Python package, stdlib only, zero runtime
-dependencies.
+<p align="center">
+  <img src="https://img.shields.io/badge/license-MIT-3fb950?style=flat-square" alt="MIT">
+  <img src="https://img.shields.io/badge/python-3.10%2B-5b9cff?style=flat-square" alt="Python 3.10+">
+  <img src="https://img.shields.io/badge/platform-Linux-121519?style=flat-square" alt="Linux">
+  <img src="https://img.shields.io/badge/tests-46%2F46%20passing-3fb950?style=flat-square" alt="46/46 passing">
+  <img src="https://img.shields.io/badge/dependencies-none-f85149?style=flat-square" alt="zero dependencies">
+  <img src="https://img.shields.io/badge/version-1.0.0-d29922?style=flat-square" alt="v1.0.0">
+</p>
 
-| | |
-| --- | --- |
-| **Version** | 1.0.0 |
-| **License** | MIT |
-| **Requires** | Linux, root, Python 3.10+ |
-| **Tested on** | Debian 12 · Ubuntu 22.04/24.04 · RHEL/CentOS 8+ · Fedora · openSUSE · Arch · Alpine |
-| **Packages** | none (optional: nginx, fail2ban, ufw, mariadb-client) |
+<p align="center">
+  <a href="#-quick-start">Quick start</a> ·
+  <a href="#-features">Features</a> ·
+  <a href="#-how-it-works">How it works</a> ·
+  <a href="#-dashboard">Dashboard</a> ·
+  <a href="#-testing">Testing</a> ·
+  <a href="#-uninstall">Uninstall</a>
+</p>
 
 ---
 
-## Quick start
+One Python package, stdlib only. Nothing is shelled out to a helper script —
+every component (chain builder, backup runner, Discord client, dashboard) is
+importable Python.
+
+| | |
+| --- | --- |
+| **Requires** | Linux · root · Python 3.10+ |
+| **Tested on** | Debian 12 · Ubuntu 22.04/24.04 · RHEL/CentOS 8+ · Fedora · openSUSE · Arch · Alpine |
+| **Optional** | nginx · fail2ban · ufw · mariadb-client |
+| **License** | MIT © [Nex-Devz](https://github.com/Nex-Devz) |
+
+---
+
+## 🚀 Quick start
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/Nex-Devz/VexaShield/main/install.sh | bash
 ```
 
-Or from a clone:
+From a clone instead:
 
 ```bash
 git clone https://github.com/Nex-Devz/VexaShield.git
 cd VexaShield
 bash install.sh            # interactive
-bash install.sh -y         # every default accepted, CI-friendly
+bash install.sh -y         # every default accepted (CI friendly)
+bash install.sh --dry-run  # show the plan, change nothing
 ```
 
-`install.sh` detects your distribution, installs the runtime dependencies
-(python3, curl, ca-certificates, git, gzip, iptables, cron, mariadb-client,
-fail2ban, nginx, ufw — whichever your package manager ships), verifies Python
-3.10+, fetches the source if needed, then runs the interactive installer.
+<details>
+<summary>📦 What <code>install.sh</code> does before the wizard starts</summary>
 
-### Installer options
+<br>
+
+1. Detects the distribution from `/etc/os-release` (`ID` + `ID_LIKE`).
+2. Picks the package manager: `apt-get`, `dnf`, `yum`, `zypper`, `pacman`, `apk`.
+3. Maps every logical dependency to **this** distro's package name and installs
+   only what is missing.
+
+   | Logical | Debian/Ubuntu | RHEL/Fedora | openSUSE | Arch | Alpine |
+   | --- | --- | --- | --- | --- | --- |
+   | python | `python3` | `python3` | `python3` | `python` | `python3` |
+   | firewall engine | `iptables` | `iptables-nft` | `iptables` | `iptables` | `iptables` |
+   | persistence | `iptables-persistent` | `iptables-services` | `iptables` | `iptables` | `iptables` |
+   | database client | `mariadb-client` | `mariadb` | `mariadb-client` | `mariadb` | `mariadb-client` |
+   | scheduler | `cron` | `cronie` | `cron` | `cron` | `dcron` |
+   | ufw | `ufw` | not packaged | `ufw` | `ufw` | `ufw` |
+4. Verifies Python ≥ 3.10, fetches the source (when piped through `curl`) and
+   runs `install.py`.
+
+Optional packages are best-effort: a distro that does not ship `ufw` never
+aborts the install, it degrades to a warning.
+
+</details>
+
+<details>
+<summary>🎛 Full installer flag reference</summary>
+
+<br>
 
 | Option | Effect |
 | --- | --- |
 | `-y`, `--yes` | unattended: accept every default |
 | `--no-deps` | skip package installation entirely |
-| `--minimal` | only python3, curl, ca-certificates, git, gzip, iptables, cron |
+| `--minimal` | python3, curl, ca-certificates, git, gzip, iptables, cron only |
 | `--no-nginx` | do not install or provision nginx throttling |
 | `--no-fail2ban` | do not install the fail2ban jails |
 | `--no-ufw` | do not install or enable the host firewall |
-| `--no-dashboard` | install the files but leave the dashboard unit off |
+| `--no-dashboard` | install files but leave the dashboard unit off |
 | `--dry-run` | print the detected platform and package plan, change nothing |
 | `--branch <name>` | fetch a different branch when installing from GitHub |
 | `-- <args>` | forward extra flags straight to `install.py` |
 
-`python3 install.py` accepts the same `--no-*` flags and honours
-`NO_COLOR`, `VS_ALERT_WEBHOOK`, `VS_BACKUP_WEBHOOK`, `VS_MENTION_ID` and
-`VS_DB_PASS` for scripted installs.
+`python3 install.py` accepts the same `--no-*` flags and honours `NO_COLOR`,
+`VS_ALERT_WEBHOOK`, `VS_BACKUP_WEBHOOK`, `VS_MENTION_ID` and `VS_DB_PASS` for
+scripted installs. `uninstall.sh` accepts `--keep-data` and `--purge`.
 
-### What the wizard asks
-
-| Step | Prompt | Purpose |
-| --- | --- | --- |
-| 1 | Discord security webhook | attacks, bans, manual blocks |
-| 1 | Discord backup webhook | nightly dump result (can mirror security) |
-| 1 | Discord user ID | optional `@mention` on every event |
-| 2 | Database, schedule, retention | what to dump and when |
-| 3 | Protection profile | `lite` / `standard` / `aggressive` |
-| 4 | UFW allow-list | ssh, 80/443, dashboard `7890/tcp+udp`, game range |
-| 5 | Dashboard port + access token | control panel login |
-
-Every answer is validated before the next step: webhooks are pinged,
-`mysqldump` is probed, `nginx -t` must pass before a reload, and UFW is only
-enabled once SSH has an allow rule. Any file the installer touches is
-snapshotted and rolled back if validation fails.
+</details>
 
 ---
 
-## What it does
+## ✨ Features
 
-### Anti-DDoS
+| Icon | Component | What it gives you |
+| :-: | --- | --- |
+| 🔥 | **Anti-DDoS chain** | `VS-DDOS` / `VS-SCAN` / `VS-FLOOD` iptables chains, 3 intensity profiles, IPv6 mirror |
+| 🚦 | **HTTP throttle** | nginx `limit_req` + `limit_conn`, `429` on over-limit, auto-ban via fail2ban |
+| 🛡 | **fail2ban jails** | http flood, port scan, kernel flood — every ban pushed to Discord |
+| 💾 | **Database backups** | `mysqldump` → deflated zip → Discord parts → 7-day retention, verified |
+| 📊 | **Dashboard** | stdlib HTTP server on `:7890`, token login, CSRF, live controls |
+| 🔒 | **Host firewall** | UFW allow-list staged *before* enable — SSH can never be locked out |
+| 🧪 | **Isolated test suite** | 46 checks that never touch the host firewall, fail2ban or nginx |
+| 📦 | **Zero dependencies** | no pip installs, no frameworks, no shell helpers |
 
-A dedicated `VS-DDOS` chain sits at the head of `INPUT`. It scrubs and
-returns — it never owns your policy, so a bad rule cannot lock you out.
+---
+
+## ⚙️ How it works
+
+### 1 · Install workflow
+
+```mermaid
+%%{init: {'theme':'base','themeVariables':{
+  'primaryColor':'#121519','primaryTextColor':'#e6edf3','primaryBorderColor':'#5b9cff',
+  'lineColor':'#8b949e','secondaryColor':'#0b0d10','tertiaryColor':'#161b22',
+  'fontFamily':'ui-monospace, monospace','fontSize':'13px'}}}%%
+flowchart TD
+    classDef boot fill:#0b0d10,stroke:#5b9cff,color:#e6edf3
+    classDef job  fill:#121519,stroke:#3fb950,color:#e6edf3
+    classDef ask  fill:#161b22,stroke:#d29922,color:#e6edf3
+    classDef safe fill:#121519,stroke:#f85149,color:#e6edf3
+
+    A["install.sh<br/>curl | bash"]:::boot --> B["detect OS + package manager"]:::job
+    B --> C["install missing packages"]:::job
+    C --> D{"python >= 3.10 ?"}:::safe
+    D -- no --> X["abort with the exact fix"]:::safe
+    D -- yes --> E["install.py wizard"]:::boot
+    E --> F["1 · Discord endpoints<br/>ping both webhooks"]:::ask
+    F --> G["2 · Database + schedule<br/>probe mysqldump"]:::ask
+    G --> H["3 · Protection profile<br/>lite / standard / aggressive"]:::ask
+    H --> I["4 · UFW allow-list<br/>ssh · 80 · 443 · 7890 · 2000-2050"]:::ask
+    I --> J["5 · Dashboard token"]:::ask
+    J --> K["provision<br/>sysctl · fail2ban · nginx · ufw · iptables"]:::job
+    K --> L{"nginx -t passes ?"}:::safe
+    L -- no --> M["roll back every touched file"]:::safe
+    L -- yes --> N["systemd enable + vexashield doctor"]:::job
+    M --> X
+    N --> O["dashboard on :7890"]:::boot
+```
+
+Every answer is validated before the next step, and every file the installer
+touches is snapshotted — a failed validation rolls the whole step back
+instead of leaving a half-written nginx config.
+
+### 2 · Packet workflow (runtime)
+
+```mermaid
+%%{init: {'theme':'base','themeVariables':{
+  'primaryColor':'#121519','primaryTextColor':'#e6edf3','primaryBorderColor':'#5b9cff',
+  'lineColor':'#8b949e','fontFamily':'ui-monospace, monospace','fontSize':'13px'}}}%%
+flowchart LR
+    classDef ok   fill:#121519,stroke:#3fb950,color:#e6edf3
+    classDef bad  fill:#121519,stroke:#f85149,color:#e6edf3
+    classDef core fill:#0b0d10,stroke:#5b9cff,color:#e6edf3
+    classDef info fill:#161b22,stroke:#d29922,color:#e6edf3
+
+    A["packet<br/>on the wire"]:::core --> B["INPUT<br/>→ VS-DDOS"]:::core
+    B --> C{"malformed / spoofed<br/>bad TCP flags ?"}:::core
+    C -- yes --> D["DROP · VS-SCAN"]:::bad
+    C -- no --> E{"over per-source<br/>rate or conn budget ?"}:::core
+    E -- yes --> F["DROP · VS-FLOOD"]:::bad
+    E -- no --> G["ACCEPT<br/>to the service"]:::ok
+    D --> H["kernel log line"]:::info
+    F --> H
+    H --> I["fail2ban jail<br/>vs-portscan · vs-flood"]:::info
+    I --> J["Discord embed<br/>ban + mention"]:::info
+    I --> K["f2b DROP rule<br/>at the head of INPUT"]:::bad
+    K -.->|next packet dies here| B
+```
+
+The chain **scrubs and returns** — it never owns the policy, so a bad rule
+cannot lock you out. `vexashield ddos reset` removes only VexaShield's own
+chains; UFW, Docker and pre-existing rules stay untouched.
 
 | Layer | Behaviour |
 | --- | --- |
@@ -91,76 +198,88 @@ returns — it never owns your policy, so a bad rule cannot lock you out.
 | IPv6 | mirrored chain for flags, rate and ICMPv6 |
 | sysctl | syncookies, backlog, `rp_filter`, redirect/source-route off, martian logging |
 
-Profiles: `lite` (game heavy), `standard` (recommended), `aggressive`
-(attack mode).
+### 3 · Backup workflow
 
-### HTTP flood (nginx)
+```mermaid
+%%{init: {'theme':'base','themeVariables':{
+  'primaryColor':'#121519','primaryTextColor':'#e6edf3','primaryBorderColor':'#5b9cff',
+  'lineColor':'#8b949e','fontFamily':'ui-monospace, monospace','fontSize':'13px'}}}%%
+flowchart LR
+    classDef core fill:#0b0d10,stroke:#5b9cff,color:#e6edf3
+    classDef job  fill:#121519,stroke:#3fb950,color:#e6edf3
+    classDef net  fill:#161b22,stroke:#d29922,color:#e6edf3
+    classDef bad  fill:#121519,stroke:#f85149,color:#e6edf3
 
-`limit_req_zone` + `limit_conn_zone` are rendered into
-`/etc/nginx/conf.d/00-vexashield.conf` and a snippet is included in every
-`server { }` block. Over-limit requests receive `429`, and the matching
-`vs-http-limit` jail bans repeat offenders with a Discord message.
-
-### Fail2ban jails
-
-| Jail | Trigger | Default ban |
-| --- | --- | --- |
-| `vs-http-limit` | nginx `limiting requests / connections` | 10 min |
-| `vs-portscan` | `VS-SCAN:` kernel log lines | 24 h, all ports |
-| `vs-flood` | `VS-FLOOD:` kernel log lines | 30 min |
-
-Bans and unbans are pushed to Discord through
-`vexashield notify ban|unban …` — there is no shell helper anywhere.
-
-### Database backups
-
-```
-mysqldump  →  deflated .zip  →  Discord (split parts)  →  7-day retention
+    T["systemd timer<br/>daily 02:00 · Persistent"]:::core --> R["vexashield backup run"]:::job
+    R --> D["mysqldump"]:::job
+    D --> Z["zip · deflate level 6"]:::job
+    Z --> U["split ≤ 8 MB parts"]:::job
+    U --> P1["Discord part 1..n"]:::net
+    P1 --> E["embed: size · duration · parts · rejoin cmd"]:::net
+    E --> K["keep 7 days"]:::job
+    E -.->|failure| X["failure embed + @mention"]:::bad
 ```
 
-- Archives are split into parts below the Discord attachment limit and
-  uploaded in batches, with a rejoin command printed in the embed.
-- Success and failure both post an embed with size, duration and part count.
-- `vexashield-backup.timer` runs daily and is `Persistent=true`, so a box
-  that was powered off still catches up.
-- `vexashield backup verify` integrity-checks every archive.
+Success **and** failure both post an embed. `vexashield backup verify`
+integrity-checks every archive, and the timer is `Persistent=true`, so a box
+that was powered off still catches up.
 
-### Host firewall (UFW)
+### 4 · Dashboard workflow
 
-The allow-list is staged **before** ufw is switched on:
+```mermaid
+%%{init: {'theme':'base','themeVariables':{
+  'primaryColor':'#121519','primaryTextColor':'#e6edf3','primaryBorderColor':'#5b9cff',
+  'lineColor':'#8b949e','fontFamily':'ui-monospace, monospace','fontSize':'13px'}}}%%
+flowchart LR
+    classDef core fill:#0b0d10,stroke:#5b9cff,color:#e6edf3
+    classDef safe fill:#161b22,stroke:#f85149,color:#e6edf3
+    classDef job  fill:#121519,stroke:#3fb950,color:#e6edf3
 
+    U["browser<br/>:7890"]:::core --> L["token login<br/>constant-time compare"]:::safe
+    L --> S["HttpOnly · SameSite=Strict<br/>session + CSRF token"]:::safe
+    S --> G["GET /api/overview<br/>state collectors"]:::job
+    S --> A["POST /api/*<br/>CSRF header required"]:::safe
+    A --> P["profile switch · ban · backup<br/>config edit · ufw re-sync"]:::job
+    P --> N["Discord / iptables / fail2ban"]:::job
 ```
-ssh (detected port)   tcp
-80, 443               tcp
-7890                  tcp + udp     # dashboard
-extra ports           tcp / udp
-2000-2050             tcp + udp     # game range
-```
 
-Docker-published ports keep bypassing UFW (a `DOCKER-USER` passthrough is
-appended to `/etc/ufw/after.rules`).
+Polling only (5 s / 12 s), no websockets, no framework, `MemoryMax=192M`.
+Webhook URLs and the access token are never returned by the API.
 
 ---
 
-## Dashboard
+## 🌐 Dashboard
 
-Runs on **`http://<host>:7890`** — `ThreadingHTTPServer`, stdlib only.
-
-- Token sign-in, HttpOnly + `SameSite=Strict` session cookie, per-session CSRF
-  token, constant-time token comparison, login rate limiting, strict CSP and
-  `X-Frame-Options: DENY`.
-- Views: Overview, Blocked, Protection, Bans, Backups, Settings.
-- Live actions: switch profile, re-apply the stack, ban/unban addresses,
-  trigger a backup, edit schedules and throttle limits, re-sync UFW.
-- Polling only (5 s / 12 s) — no websockets, no framework, `MemoryMax=192M`.
+`http://<host>:7890` — views for **Overview**, **Blocked**, **Protection**,
+**Bans**, **Backups** and **Settings**, with live actions: switch profile,
+re-apply the stack, ban/unban addresses, trigger a backup, edit schedules and
+throttle limits, re-sync UFW.
 
 ```bash
 vexashield dashboard url     # print the URL
 ```
 
+<details>
+<summary>🔐 Dashboard hardening</summary>
+
+<br>
+
+- Token sign-in with constant-time comparison and login rate limiting
+- `HttpOnly` + `SameSite=Strict` session cookie, per-session CSRF token
+- Strict `Content-Security-Policy`, `X-Frame-Options: DENY`
+- Config endpoint returns masked tails only — never a webhook URL or the token
+- `MemoryMax=192M` systemd sandbox
+
+</details>
+
 ---
 
-## Commands
+## 📖 Commands
+
+<details>
+<summary>Full CLI reference</summary>
+
+<br>
 
 ```
 vexashield status                    health summary
@@ -168,6 +287,7 @@ vexashield status --json             full machine-readable state
 vexashield ddos apply [--profile P]  rebuild the scrubbing chain
 vexashield ddos reset                remove VexaShield chains
 vexashield ddos profile aggressive   switch budget profile
+vexashield ddos status               counters as JSON
 vexashield backup run|list|verify    manual backup operations
 vexashield ban add <jail> <ip>       manual ban
 vexashield ban del <jail> <ip>       manual unban
@@ -175,15 +295,17 @@ vexashield ban list                  show every jail and address
 vexashield firewall sync|status      UFW allow-list control
 vexashield webhook test [alert|backup|all]
 vexashield config show|set KEY VALUE
-vexashield doctor                    full diagnosis
+vexashield dashboard run|url         control panel
 vexashield monitor                   attack-rate daemon (Discord alerts)
+vexashield doctor                    full diagnosis
 ```
 
----
+</details>
 
-## Configuration
+<details>
+<summary>🗂 Configuration reference — <code>/etc/vexashield/vexashield.conf</code> (mode 0600)</summary>
 
-Written to `/etc/vexashield/vexashield.conf` (mode `0600`).
+<br>
 
 | Key | Default | Meaning |
 | --- | --- | --- |
@@ -200,7 +322,7 @@ Written to `/etc/vexashield/vexashield.conf` (mode `0600`).
 | `backup_retention` | `7` | days kept on disk |
 | `backup_chunk_mb` | `8` | Discord part size |
 | `nginx_rate` / `nginx_burst` / `nginx_conn` | `10r/s` / `30` / `25` | HTTP throttle |
-| `f2b_*` | see file | jail thresholds, seconds |
+| `f2b_http_ban` / `f2b_scan_ban` / `f2b_flood_ban` | `600` / `86400` / `1800` | ban windows, seconds |
 | `dash_port` / `dash_bind` | `7890` / `0.0.0.0` | dashboard listener |
 | `attack_pps_alert` | `500` | monitor alert threshold |
 
@@ -209,27 +331,12 @@ vexashield config show
 vexashield config set profile aggressive
 ```
 
----
+</details>
 
-## Testing
+<details>
+<summary>📁 Project layout and runtime paths</summary>
 
-The suite runs in a temporary directory with `VS_*` environment overrides —
-it never touches your host firewall, fail2ban, nginx or systemd.
-
-```bash
-python3 tests/smoke.py
-python3 tests/smoke.py --keep   # keep the temp dir for inspection
-```
-
-Covers the CLI, the installer entry points (`--help`, `--dry-run`, flag
-parsing), config permissions, a real dump → zip → verify → history cycle, the
-iptables chain inside a network namespace, nginx template rendering and
-rollback, fail2ban jail rendering, and the whole dashboard auth/CSRF flow,
-plus a final assertion that `/etc/nginx` was never modified.
-
----
-
-## Layout
+<br>
 
 ```
 VexaShield/
@@ -253,8 +360,6 @@ VexaShield/
 └── tests/smoke.py            isolated end-to-end suite
 ```
 
-Runtime paths:
-
 ```
 /etc/vexashield/vexashield.conf   config (0600)
 /var/lib/vexashield/              state, sessions, rule snapshots
@@ -262,9 +367,34 @@ Runtime paths:
 /var/backups/vexashield/          archives (0700)
 ```
 
+</details>
+
 ---
 
-## Security notes
+## 🧪 Testing
+
+The suite runs inside a temporary directory with `VS_*` environment overrides
+— it never touches your host firewall, fail2ban, nginx or systemd.
+
+```bash
+python3 tests/smoke.py
+python3 tests/smoke.py --keep   # keep the temp dir for inspection
+```
+
+| Area | Covered |
+| --- | --- |
+| CLI | version, config round-trip, file mode `0600`, doctor |
+| Installer | `install.sh --help/--dry-run`, flag parsing, no block-art banner |
+| Backup | real dump → zip → verify → history → integrity check |
+| Anti-DDoS | chain applied inside a network namespace (`unshare -rn`) |
+| nginx | template rendering + transactional wiring rollback |
+| fail2ban | jail rendering with the Discord action |
+| Dashboard | login, CSRF, 401/403, async backup, config redaction, all assets |
+| Regression | `/etc/nginx` must be byte-identical afterwards |
+
+---
+
+## 🔒 Security notes
 
 - The config holds webhook URLs and DB credentials and is written `0600`.
 - The dashboard never returns webhook URLs or the access token — only masked
@@ -276,7 +406,7 @@ Runtime paths:
 
 ---
 
-## Uninstall
+## 🗑 Uninstall
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/Nex-Devz/VexaShield/main/uninstall.sh | bash
@@ -291,6 +421,6 @@ your SSH session survives.
 
 ---
 
-## License
+## 📄 License
 
 MIT © [Nex-Devz](https://github.com/Nex-Devz)
