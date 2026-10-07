@@ -21,7 +21,7 @@ from pathlib import Path
 HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE))
 
-from vexashield import backup, core, ddos, ufw  # noqa: E402
+from vexashield import backup, core, db, ddos, ufw  # noqa: E402
 from vexashield import discord  # noqa: E402
 
 USE_COLOR = sys.stdout.isatty() and not os.environ.get("NO_COLOR")
@@ -95,7 +95,8 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="Environment overrides (useful when running unattended):\n"
                "  VS_ALERT_WEBHOOK  VS_BACKUP_WEBHOOK  VS_MENTION_ID\n"
-               "  VS_DB_PASS        password used for the dump probe\n",
+               "  VS_ADMIN_PASS     VS_ADMIN_EMAIL     VS_DB_PASS\n"
+               "  VS_NONINTERACTIVE=1 forces every default\n",
     )
     p.add_argument("-y", "--yes", action="store_true",
                    help="non-interactive: accept every default")
@@ -211,6 +212,37 @@ def enable_units(args: argparse.Namespace) -> None:
         (ok if state == "active" else warn)(f"{u}: {state}")
 
 
+def ask_admin_password() -> None:
+    """Dashboard admin account: password (stored hashed) plus a contact email."""
+    current = db.admin()
+    where = f" ({current['email']})" if current.get("email") else ""
+    if current.get("password_hash"):
+        ok(f"admin password already set{where}")
+        if not core.confirm("Change the admin password?", False):
+            return
+
+    pw = os.environ.get("VS_ADMIN_PASS", "")
+    if not pw and core.can_ask():
+        for _ in range(3):
+            pw = core.prompt("Admin password for the dashboard "
+                             "(blank = access token only)", "", secret=True)
+            if not pw:
+                break
+            if pw == core.prompt("Repeat the admin password", "", secret=True):
+                break
+            warn("the two passwords do not match")
+            pw = ""
+    if not pw:
+        warn("no admin password - the dashboard accepts the access token only")
+        return
+
+    email = os.environ.get("VS_ADMIN_EMAIL") or core.prompt(
+        "Contact email for the admin account (optional)",
+        current.get("email", ""))
+    db.set_admin(pw, email.strip())
+    ok("admin password stored (pbkdf2-sha256, 200000 rounds)")
+
+
 def summary(cfg: dict, do_fw: bool) -> None:
     host = os.uname().nodename
     port = cfg["dash_port"]
@@ -221,6 +253,8 @@ def summary(cfg: dict, do_fw: bool) -> None:
     kv("backups", cfg["backup_dir"])
     kv("schedule", f"daily {cfg['backup_at']}, keep {cfg['backup_retention']}d")
     kv("profile", cfg["profile"])
+    kv("admin", "password set" if db.has_password() else "token only",
+       "green" if db.has_password() else "yellow")
     kv("firewall", "ufw enabled" if do_fw else "ufw skipped")
     kv("security", "configured" if cfg["alert_webhook"] else "not configured",
        "green" if cfg["alert_webhook"] else "yellow")
@@ -252,7 +286,10 @@ def main(argv: list[str] | None = None) -> int:
               file=sys.stderr)
         return 1
 
-    core.set_non_interactive(args.yes or not sys.stdin.isatty())
+    core.set_non_interactive(
+        args.yes
+        or os.environ.get("VS_NONINTERACTIVE", "").strip().lower()
+        in ("1", "yes", "true"))
     header()
 
     core.ensure_dirs()
@@ -351,9 +388,16 @@ def main(argv: list[str] | None = None) -> int:
 
     # ----------------------------------------------------- 5. access ------
     section(5, 5, "Dashboard access")
+    print("    Two ways in:")
+    print(f"      {c('password', 'cyan')}  admin account behind /admin")
+    print(f"      {c('token', 'cyan')}      access token, printed at the end")
+    print()
     if not cfg.get("dash_token") or not core.confirm(
             "Keep the existing access token?", True):
         cfg["dash_token"] = "vs_" + secrets.token_urlsafe(24)
+    kv("token", cfg["dash_token"], "yellow")
+    print()
+    ask_admin_password()
 
     if args.no_fail2ban:
         cfg["f2b_enabled"] = 0

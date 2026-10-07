@@ -180,29 +180,54 @@ def config_defaults() -> dict[str, Any]:
 
 def load_config() -> dict[str, Any]:
     cfg = config_defaults()
-    if CONFIG_FILE.exists():
-        for line in CONFIG_FILE.read_text(encoding="utf-8").splitlines():
-            line = line.strip()
-            if not line or line.startswith("#") or "=" not in line:
-                continue
-            key, _, val = line.partition("=")
-            key = key.strip()
-            if key not in cfg:
-                continue
-            val = val.strip()
-            if len(val) >= 2 and val[0] == val[-1] and val[0] in "\"'":
-                val = val[1:-1]
-            if isinstance(_DEFAULTS[key], int):
-                try:
-                    val = int(val)
-                except ValueError:
-                    pass
-            cfg[key] = val
+    raw = _read_conf()
+    if raw:
+        # the conf file is authoritative, the database fills what it lost
+        for key, val in _read_db().items():
+            if key in _DEFAULTS and not raw.get(key):
+                raw[key] = val
+    else:
+        raw = _read_db()
+    for key, val in raw.items():
+        if key not in cfg:
+            continue
+        if isinstance(_DEFAULTS[key], int):
+            try:
+                val = int(val)
+            except (TypeError, ValueError):
+                pass
+        cfg[key] = val
     if not cfg.get("backup_webhook"):
         cfg["backup_webhook"] = cfg.get("alert_webhook", "")
     if not cfg.get("dash_token"):
-        cfg["dash_token"] = secrets.token_urlsafe(32)
+        cfg["dash_token"] = "vs_" + secrets.token_urlsafe(24)
     return cfg
+
+
+def _read_conf() -> dict[str, str]:
+    if not CONFIG_FILE.exists():
+        return {}
+    raw: dict[str, str] = {}
+    for line in CONFIG_FILE.read_text(encoding="utf-8").splitlines():
+        line = line.strip()
+        if not line or line.startswith("#") or "=" not in line:
+            continue
+        key, _, val = line.partition("=")
+        key = key.strip()
+        val = val.strip()
+        if len(val) >= 2 and val[0] == val[-1] and val[0] in "\"'":
+            val = val[1:-1]
+        raw[key] = val
+    return raw
+
+
+def _read_db() -> dict[str, str]:
+    try:
+        from . import db
+        return db.get_config()
+    except Exception as exc:  # noqa: BLE001 - a broken db must not block a boot
+        log("warn", f"config database unavailable: {exc}")
+        return {}
 
 
 def save_config(cfg: dict[str, Any]) -> None:
@@ -219,6 +244,11 @@ def save_config(cfg: dict[str, Any]) -> None:
     tmp.write_text("\n".join(lines) + "\n", encoding="utf-8")
     os.chmod(tmp, 0o600)
     tmp.replace(CONFIG_FILE)
+    try:
+        from . import db
+        db.put_config(cfg)
+    except Exception as exc:  # noqa: BLE001 - conf file alone is still usable
+        log("warn", f"config not mirrored to database: {exc}")
     log("ok", f"config written -> {CONFIG_FILE}")
 
 
@@ -278,28 +308,100 @@ def set_non_interactive(value: bool = True) -> None:
     NON_INTERACTIVE = value
 
 
-def prompt(label: str, default: str = "", *, secret: bool = False) -> str:
+def _tty(mode: str = "r"):
+    """Controlling terminal, or None.
+
+    stdin is a pipe under `curl ... | bash`, but the operator still has a
+    terminal - /dev/tty is the only handle that reaches them. Terminals are
+    not seekable, so they only open in a read-only or write-only mode.
+    """
+    try:
+        handle = open("/dev/tty", mode)
+    except (OSError, ValueError):
+        return None
+    if not handle.isatty():
+        handle.close()
+        return None
+    return handle
+
+
+def can_ask() -> bool:
+    """True when an answer can actually be collected from the operator."""
     if NON_INTERACTIVE:
+        return False
+    if sys.stdin.isatty():
+        return True
+    handle = _tty_reader()
+    return handle is not None
+
+
+# one reader for the lifetime of the process: closing it between prompts would
+# throw away answers the terminal already buffered
+_TTY_READER = None
+
+
+def _tty_reader():
+    global _TTY_READER
+    if _TTY_READER is not None and not _TTY_READER.closed:
+        return _TTY_READER
+    _TTY_READER = _tty("r")
+    return _TTY_READER
+
+
+def _read_line(text: str) -> str | None:
+    """Print a prompt and return the typed line, or None if nobody can answer."""
+    if sys.stdin.isatty():
+        try:
+            return input(text).strip()
+        except EOFError:
+            return None
+    reader = _tty_reader()
+    if reader is None:
+        return None
+    writer = sys.stdout if sys.stdout.isatty() else _tty("w")
+    try:
+        if writer is not None:
+            writer.write(text)
+            writer.flush()
+        line = reader.readline()
+        if not line:
+            return None
+        if not sys.stdout.isatty():
+            print(line.rstrip("\n"))
+        return line.strip()
+    finally:
+        if writer is not None and writer is not sys.stdout:
+            writer.close()
+
+
+def prompt(label: str, default: str = "", *, secret: bool = False) -> str:
+    if not can_ask():
         return default
     suffix = f" {_GRY}[{default}]{_RST}" if default else ""
     label_txt = _colorize(sys.stdout.isatty(), _BOLD, label)
     if secret:
         import getpass
-        val = getpass.getpass(f"{label_txt}{suffix}: ")
+        try:
+            val = getpass.getpass(f"{label_txt}{suffix}: ")
+        except (EOFError, OSError):
+            return default
     else:
-        val = input(f"{label_txt}{suffix}: ").strip()
+        line = _read_line(f"{label_txt}{suffix}: ")
+        if line is None:
+            return default
+        val = line
     return val or default
 
 
 def choose(label: str, options: list[str], default: str) -> str:
-    if NON_INTERACTIVE:
+    if not can_ask():
         return default
     use = sys.stdout.isatty()
     print(_colorize(use, _BOLD, label))
     for i, opt in enumerate(options, 1):
         print(f"   {_colorize(use, _CYN, '%2d)' % i)} {opt}")
-    raw = input(f"{_colorize(use, _BOLD, 'Choice')} "
-                f"{_colorize(use, _GRY, '[' + default + ']')}: ").strip()
+    raw = _read_line(f"{_colorize(use, _BOLD, 'Choice')} "
+                     f"{_colorize(use, _GRY, '[' + default + ']')}: ")
     if not raw:
         return default
     if raw.isdigit() and 1 <= int(raw) <= len(options):
@@ -308,12 +410,12 @@ def choose(label: str, options: list[str], default: str) -> str:
 
 
 def confirm(label: str, default: bool = False) -> bool:
-    if NON_INTERACTIVE:
+    if not can_ask():
         return default
     hint = "Y/n" if default else "y/N"
     use = sys.stdout.isatty()
-    raw = input(f"{_colorize(use, _BOLD, label)} "
-                f"{_colorize(use, _GRY, '[' + hint + ']')}: ").strip().lower()
+    raw = _read_line(f"{_colorize(use, _BOLD, label)} "
+                     f"{_colorize(use, _GRY, '[' + hint + ']')}: ")
     if not raw:
         return default
-    return raw in ("y", "yes")
+    return raw.strip().lower() in ("y", "yes")
