@@ -86,6 +86,9 @@ _COLORS = {
 }
 _RESET = "\033[0m"
 _BOLD = "\033[1m"
+_RST = _RESET
+_GRY = "\033[90m"
+_CYN = "\033[36m"
 _LOGFILE: Path | None = None
 
 
@@ -265,21 +268,38 @@ def timer():
     yield lambda: time.time() - start
 
 
+# Set by install.py --yes / any non-tty invocation so the whole installer can
+# run unattended (CI, provisioning, curl | bash).
+NON_INTERACTIVE = False
+
+
+def set_non_interactive(value: bool = True) -> None:
+    global NON_INTERACTIVE
+    NON_INTERACTIVE = value
+
+
 def prompt(label: str, default: str = "", *, secret: bool = False) -> str:
-    suffix = f" [{default}]" if default else ""
+    if NON_INTERACTIVE:
+        return default
+    suffix = f" {_GRY}[{default}]{_RST}" if default else ""
+    label_txt = _colorize(sys.stdout.isatty(), _BOLD, label)
     if secret:
         import getpass
-        val = getpass.getpass(f"{label}{suffix}: ")
+        val = getpass.getpass(f"{label_txt}{suffix}: ")
     else:
-        val = input(f"{label}{suffix}: ").strip()
+        val = input(f"{label_txt}{suffix}: ").strip()
     return val or default
 
 
 def choose(label: str, options: list[str], default: str) -> str:
-    print(_colorize(sys.stdout.isatty(), _BOLD, label))
+    if NON_INTERACTIVE:
+        return default
+    use = sys.stdout.isatty()
+    print(_colorize(use, _BOLD, label))
     for i, opt in enumerate(options, 1):
-        print(f"   {i}) {opt}")
-    raw = input(f"Choice [{default}]: ").strip()
+        print(f"   {_colorize(use, _CYN, '%2d)' % i)} {opt}")
+    raw = input(f"{_colorize(use, _BOLD, 'Choice')} "
+                f"{_colorize(use, _GRY, '[' + default + ']')}: ").strip()
     if not raw:
         return default
     if raw.isdigit() and 1 <= int(raw) <= len(options):
@@ -288,8 +308,12 @@ def choose(label: str, options: list[str], default: str) -> str:
 
 
 def confirm(label: str, default: bool = False) -> bool:
+    if NON_INTERACTIVE:
+        return default
     hint = "Y/n" if default else "y/N"
-    raw = input(f"{label} [{hint}]: ").strip().lower()
+    use = sys.stdout.isatty()
+    raw = input(f"{_colorize(use, _BOLD, label)} "
+                f"{_colorize(use, _GRY, '[' + hint + ']')}: ").strip().lower()
     if not raw:
         return default
     return raw in ("y", "yes")
